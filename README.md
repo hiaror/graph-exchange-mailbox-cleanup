@@ -9,6 +9,14 @@ The solution was designed for large-scale, real-world scenarios where:
 - Throttling and transient Graph errors are expected
 - Auditability and safe dry runs are mandatory
 
+## Why This Exists
+
+In large Exchange Online environments, targeted mailbox cleanup often needs to be performed
+across many mailboxes while ensuring accuracy, auditability, and minimal operational risk.
+
+This script was designed to support that scenario by combining CSV-driven targeting,
+safe dry-run validation, and resilient Graph API handling.
+
 ## Key Capabilities
 - Microsoft Graph–based message search (`from:` query)
 - Supports dry-run mode (no deletion)
