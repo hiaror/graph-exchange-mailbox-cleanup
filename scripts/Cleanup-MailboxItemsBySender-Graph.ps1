@@ -12,7 +12,7 @@ Dry run (one pass):
 .\Cleanup-MailboxItemsBySender-Graph.ps1 `
   -TenantId "00000000-0000-0000-0000-000000000000" `
   -AppId "00000000-0000-0000-0000-000000000000" `
-  -AppSecret "YOUR_APP_SECRET_HERE" `
+  -CertificateThumbprint "YOUR_CERT_THUMBPRINT_HERE" `
   -MailboxesCsv ".\sample-data\Mailboxes.sample.csv" `
   -SendersCsv ".\sample-data\Senders.sample.csv" `
   -DeleteItems N `
@@ -23,7 +23,7 @@ Delete with permanent delete (multi-pass):
 .\Cleanup-MailboxItemsBySender-Graph.ps1 `
   -TenantId "00000000-0000-0000-0000-000000000000" `
   -AppId "00000000-0000-0000-0000-000000000000" `
-  -AppSecret "YOUR_APP_SECRET_HERE" `
+  -CertificateThumbprint "YOUR_CERT_THUMBPRINT_HERE" `
   -MailboxesCsv ".\sample-data\Mailboxes.sample.csv" `
   -SendersCsv ".\sample-data\Senders.sample.csv" `
   -DeleteItems Y `
@@ -42,7 +42,7 @@ param(
   [string]$AppId,
 
   [Parameter(Mandatory=$true)]
-  [string]$AppSecret,
+  [string]$CertificateThumbprint,
 
   [Parameter(Mandatory=$false)]
   [string]$MailboxesCsv = (Join-Path $PSScriptRoot "..\sample-data\Mailboxes.sample.csv"),
@@ -89,18 +89,66 @@ function Get-HttpStatusCode {
   return $null
 }
 
+function ConvertTo-Base64Url {
+  param([Parameter(Mandatory=$true)][byte[]]$Bytes)
+  return [Convert]::ToBase64String($Bytes).TrimEnd('=').Replace('+','-').Replace('/','_')
+}
+
 function Get-AccessToken {
   param(
     [Parameter(Mandatory=$true)][string]$TenantId,
     [Parameter(Mandatory=$true)][string]$ClientId,
-    [Parameter(Mandatory=$true)][string]$ClientSecret
+    [Parameter(Mandatory=$true)][string]$CertificateThumbprint
   )
 
+  $cert = Get-ChildItem -Path "Cert:\CurrentUser\My\$CertificateThumbprint" -ErrorAction SilentlyContinue
+  if (-not $cert) {
+    $cert = Get-ChildItem -Path "Cert:\LocalMachine\My\$CertificateThumbprint" -ErrorAction SilentlyContinue
+  }
+  if (-not $cert) {
+    throw "Certificate with thumbprint '$CertificateThumbprint' not found in Cert:\CurrentUser\My or Cert:\LocalMachine\My."
+  }
+  if (-not $cert.HasPrivateKey) {
+    throw "Certificate '$CertificateThumbprint' has no accessible private key."
+  }
+
+  $rsa = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($cert)
+  if (-not $rsa) {
+    throw "Could not retrieve RSA private key from certificate '$CertificateThumbprint'."
+  }
+
+  $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+  $exp = $now + 600
+
+  $x5t = ConvertTo-Base64Url -Bytes $cert.GetCertHash()
+
+  $headerJson = @{ alg = "RS256"; typ = "JWT"; x5t = $x5t } | ConvertTo-Json -Compress
+  $claimsJson = @{
+    aud = "https://login.microsoftonline.com/$TenantId/oauth2/v2.0/token"
+    iss = $ClientId
+    sub = $ClientId
+    jti = [Guid]::NewGuid().ToString()
+    nbf = $now
+    exp = $exp
+  } | ConvertTo-Json -Compress
+
+  $headerB64 = ConvertTo-Base64Url -Bytes ([Text.Encoding]::UTF8.GetBytes($headerJson))
+  $claimsB64 = ConvertTo-Base64Url -Bytes ([Text.Encoding]::UTF8.GetBytes($claimsJson))
+  $toSign    = "$headerB64.$claimsB64"
+
+  $signature = $rsa.SignData(
+    [Text.Encoding]::UTF8.GetBytes($toSign),
+    [System.Security.Cryptography.HashAlgorithmName]::SHA256,
+    [System.Security.Cryptography.RSASignaturePadding]::Pkcs1
+  )
+  $assertion = "$toSign." + (ConvertTo-Base64Url -Bytes $signature)
+
   $tokenResp = Invoke-RestMethod -Method POST -Uri "https://login.microsoftonline.com/$TenantId/oauth2/v2.0/token" -Body @{
-    grant_type    = "client_credentials"
-    client_id     = $ClientId
-    client_secret = $ClientSecret
-    scope         = "https://graph.microsoft.com/.default"
+    grant_type            = "client_credentials"
+    client_id             = $ClientId
+    scope                 = "https://graph.microsoft.com/.default"
+    client_assertion_type = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
+    client_assertion      = $assertion
   }
 
   return @{
@@ -114,15 +162,15 @@ function Ensure-ValidToken {
     [Parameter(Mandatory=$true)]$TokenState,
     [Parameter(Mandatory=$true)][string]$TenantId,
     [Parameter(Mandatory=$true)][string]$ClientId,
-    [Parameter(Mandatory=$true)][string]$ClientSecret
+    [Parameter(Mandatory=$true)][string]$CertificateThumbprint
   )
 
   if (-not $TokenState -or -not $TokenState.AccessToken) {
-    return Get-AccessToken -TenantId $TenantId -ClientId $ClientId -ClientSecret $ClientSecret
+    return Get-AccessToken -TenantId $TenantId -ClientId $ClientId -CertificateThumbprint $CertificateThumbprint
   }
 
   if ((Get-Date) -ge $TokenState.ExpiresOn) {
-    return Get-AccessToken -TenantId $TenantId -ClientId $ClientId -ClientSecret $ClientSecret
+    return Get-AccessToken -TenantId $TenantId -ClientId $ClientId -CertificateThumbprint $CertificateThumbprint
   }
 
   return $TokenState
@@ -232,7 +280,7 @@ Write-Host ("ReportPath            : {0}" -f $ReportPath)
 Write-Host "============================================================="
 
 # Token state
-$tokenState = Get-AccessToken -TenantId $TenantId -ClientId $AppId -ClientSecret $AppSecret
+$tokenState = Get-AccessToken -TenantId $TenantId -ClientId $AppId -CertificateThumbprint $CertificateThumbprint
 
 for ($pass = 1; $pass -le $MaxPasses; $pass++) {
   $totalMatchedThisPass = 0
@@ -241,7 +289,7 @@ for ($pass = 1; $pass -le $MaxPasses; $pass++) {
   Write-Host ""
 
   foreach ($mbx in $mailboxes) {
-    $tokenState = Ensure-ValidToken -TokenState $tokenState -TenantId $TenantId -ClientId $AppId -ClientSecret $AppSecret
+    $tokenState = Ensure-ValidToken -TokenState $tokenState -TenantId $TenantId -ClientId $AppId -CertificateThumbprint $CertificateThumbprint
 
     # reset mailbox transient counter
     $script:CurrentMailbox = $mbx
@@ -269,7 +317,7 @@ for ($pass = 1; $pass -le $MaxPasses; $pass++) {
           catch {
             $code = Get-HttpStatusCode -Exception $_
             if ($code -eq 401) {
-              $tokenState = Get-AccessToken -TenantId $TenantId -ClientId $AppId -ClientSecret $AppSecret
+              $tokenState = Get-AccessToken -TenantId $TenantId -ClientId $AppId -CertificateThumbprint $CertificateThumbprint
               $headers.Authorization = "Bearer $($tokenState.AccessToken)"
               $resp = Invoke-Graph -Method "GET" -Uri $uri -Headers $headers
             } else {
@@ -314,7 +362,7 @@ for ($pass = 1; $pass -le $MaxPasses; $pass++) {
 
       if ($DeleteItems -eq "Y") {
         foreach ($msg in $matched) {
-          $tokenState = Ensure-ValidToken -TokenState $tokenState -TenantId $TenantId -ClientId $AppId -ClientSecret $AppSecret
+          $tokenState = Ensure-ValidToken -TokenState $tokenState -TenantId $TenantId -ClientId $AppId -CertificateThumbprint $CertificateThumbprint
           $headers.Authorization = "Bearer $($tokenState.AccessToken)"
 
           $delMethod = if ($UsePermanentDelete -eq "Y") { "POST" } else { "DELETE" }
@@ -331,7 +379,7 @@ for ($pass = 1; $pass -le $MaxPasses; $pass++) {
           catch {
             $code = Get-HttpStatusCode -Exception $_
             if ($code -eq 401) {
-              $tokenState = Get-AccessToken -TenantId $TenantId -ClientId $AppId -ClientSecret $AppSecret
+              $tokenState = Get-AccessToken -TenantId $TenantId -ClientId $AppId -CertificateThumbprint $CertificateThumbprint
               $headers.Authorization = "Bearer $($tokenState.AccessToken)"
               try {
                 Invoke-Graph -Method $delMethod -Uri $delUri -Headers $headers | Out-Null

@@ -41,6 +41,7 @@ safe dry-run validation, and resilient Graph API handling.
 - Microsoft Entra ID App Registration
 - Application permission: Mail.ReadWrite
 - Admin consent granted
+- Certificate thumbprint from an Entra ID app registration (recommended over client secrets)
 
 ## CSV Input Format
 
@@ -67,7 +68,7 @@ executive.office@northshore.example
 ./Cleanup-MailboxItemsBySender-Graph.ps1 `
   -TenantId "00000000-0000-0000-0000-000000000000" `
   -AppId "00000000-0000-0000-0000-000000000000" `
-  -AppSecret "YOUR_APP_SECRET_HERE" `
+  -CertificateThumbprint "YOUR_CERT_THUMBPRINT_HERE" `
   -MailboxesCsv "./sample-data/Mailboxes.sample.csv" `
   -SendersCsv "./sample-data/Senders.sample.csv" `
   -DeleteItems N `
@@ -79,7 +80,7 @@ executive.office@northshore.example
 ./Cleanup-MailboxItemsBySender-Graph.ps1 `
   -TenantId "00000000-0000-0000-0000-000000000000" `
   -AppId "00000000-0000-0000-0000-000000000000" `
-  -AppSecret "YOUR_APP_SECRET_HERE" `
+  -CertificateThumbprint "YOUR_CERT_THUMBPRINT_HERE" `
   -MailboxesCsv "./sample-data/Mailboxes.sample.csv" `
   -SendersCsv "./sample-data/Senders.sample.csv" `
   -DeleteItems Y `
@@ -99,6 +100,8 @@ Each run produces a timestamped CSV report capturing:
 
 ## Safety Notes
 Always perform a dry run first. Sample data and identifiers are sanitized.
+
+Authentication uses certificate-based app-only auth. Client secrets (-AppSecret) are not supported. Export your certificate thumbprint from the Entra ID app registration and pass it via -CertificateThumbprint. This avoids secrets in command history, CI logs, and shared scripts.
 
 ## Disclaimer
 Provided as-is for reference and learning purposes.
