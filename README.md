@@ -105,3 +105,7 @@ Authentication uses certificate-based app-only auth. Client secrets (-AppSecret)
 
 ## Disclaimer
 Provided as-is for reference and learning purposes.
+
+## Blog Post
+
+A full write-up of the CSV-driven approach, the retry logic, and the audit reporting is at [AroraMSP: Bulk mailbox cleanup with Microsoft Graph PowerShell](https://aroramsp.com/blog/graph-mailbox-cleanup).
